@@ -27,11 +27,7 @@ Context:
 
 Required content:
 - Mention "${employee}" naturally.
-- Include at least ONE specific auto-detailing result, such as:
-  • how clean the car looked
-  • how fresh the interior felt
-  • attention to small details
-  • shine, spotless finish, or before/after difference
+- Include at least ONE specific auto-detailing result.
 
 Rules:
 - Avoid generic-only praise like only saying "friendly" or "easy".
