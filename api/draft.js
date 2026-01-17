@@ -17,8 +17,22 @@ module.exports = async function handler(req, res) {
   }
 
   try {
-    const prompt = `Write a short, natural Google review for ${employee} at ${business}.
-Sound like a real customer. Casual, friendly, not promotional. ${extra || ""}`.trim();
+    const prompt = `
+Write a very short Google review (1–2 sentences max).
+
+Rules:
+- Mention the employee name "${employee}"
+- Do NOT mention the business name
+- Do NOT start with "Just had", "Just got", or "I just"
+- Use a different opening each time
+- Sound natural, casual, and human
+- Avoid salesy or promotional language
+
+Vary the angle:
+Sometimes focus on results, sometimes friendliness, sometimes how easy it was.
+
+Write only the review text.
+`.trim();
 
     const resp = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
