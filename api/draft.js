@@ -20,19 +20,31 @@ module.exports = async function handler(req, res) {
     const prompt = `
 Write a very short Google review (1–2 sentences max).
 
+Context:
+- This is for an AUTO DETAILING service.
+- The employee's name is "${employee}".
+- Do NOT mention the business name.
+
+Required content:
+- Mention "${employee}" naturally.
+- Include at least ONE specific auto-detailing result, such as:
+  • how clean the car looked
+  • how fresh the interior felt
+  • attention to small details
+  • shine, spotless finish, or before/after difference
+
 Rules:
-- Mention the employee name "${employee}"
-- Do NOT mention the business name
-- Do NOT start with "Just had", "Just got", or "I just"
-- Use a different opening each time
-- Sound natural, casual, and human
-- Avoid salesy or promotional language
+- Avoid generic-only praise like only saying "friendly" or "easy".
+- Sound like a real customer, casual and believable.
+- Do NOT sound promotional or scripted.
 
-Vary the angle:
-Sometimes focus on results, sometimes friendliness, sometimes how easy it was.
+Variation:
+- Use different wording and sentence structure each time.
+- Keep it short and human.
 
-Write only the review text.
+Write ONLY the review text.
 `.trim();
+
 
     const resp = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
