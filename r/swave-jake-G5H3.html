@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Leave a Review</title>
+
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+
+<div class="card"
+  data-employee="Jake"
+  data-business-type="solar"
+  data-service-notes="explained solar options clearly, went over pricing and savings"
+  data-google-review-url="https://search.google.com/local/writereview?placeid=0xd72d46d72b4b20ab">
+
+    <h1>Leave Jake a quick review</h1>
+    <p class="business">Swave Solutions</p>
+
+    <button id="draftBtn">Draft review with AI</button>
+
+    <textarea
+      id="reviewText"
+      placeholder="Your review will appear here..."
+      rows="5"
+    ></textarea>
+
+    <div class="actions">
+      <button id="copyBtn">Copy review</button>
+
+      <a
+        id="googleBtn"
+        href="#"
+        target="_blank"
+        class="google-btn"
+      >
+        Open Google review
+      </a>
+    </div>
+
+    <p class="note">
+      After tapping, paste your review and submit.
+    </p>
+  </div>
+
+  <script src="../script.js"></script>
+</body>
+</html>
