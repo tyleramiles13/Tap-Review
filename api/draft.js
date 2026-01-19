@@ -17,27 +17,23 @@ module.exports = async function handler(req, res) {
     return res.json({ error: "Missing OPENAI_API_KEY_REAL" });
   }
 
-  // --- Determine business type (safe for Will + fixes Swave if businessType isn't being sent) ---
+  // --- Determine business type (safe for Will + fixes Swave if businessType isn't sent) ---
   let type = (businessType || "").toLowerCase().trim();
 
-  // Normalize common variants
   if (type === "auto-detailing") type = "auto_detailing";
   if (type === "detail" || type === "detailing") type = "auto_detailing";
 
   if (!type) {
-    // If script.js forgot to send businessType, guess from serviceNotes
     const notesLower = (serviceNotes || "").toLowerCase();
-
     const solarHints = [
       "solar", "panel", "panels", "quote", "pricing", "bill", "savings",
       "financing", "install", "installation", "estimate", "kw", "utility"
     ];
-
     const looksSolar = solarHints.some((w) => notesLower.includes(w));
     type = looksSolar ? "solar" : "auto_detailing";
   }
 
-  // --- Keyword + validation rules by business type ---
+  // --- Rules by business type ---
   const rules = {
     auto_detailing: {
       label: "an auto detailing service",
@@ -54,7 +50,6 @@ module.exports = async function handler(req, res) {
         "solar", "panels", "panel", "quote", "pricing", "bill", "savings",
         "financing", "estimate", "install", "installation", "process"
       ],
-      // for solar, we don’t require “car/vehicle”
       mustMentionAny: [],
       avoidStarts: ["just had", "just got", "i just"]
     }
@@ -62,11 +57,39 @@ module.exports = async function handler(req, res) {
 
   const cfg = rules[type] || rules.auto_detailing;
 
+  function countSentences(text) {
+    // Count sentences by punctuation end marks
+    const parts = (text || "").trim().split(/[.!?]+/).filter(Boolean);
+    return parts.length;
+  }
+
+  function startsWithEmployeeName(text) {
+    const t = (text || "").trim().toLowerCase();
+    const name = String(employee || "").trim().toLowerCase();
+    if (!t || !name) return false;
+
+    // Check first "word" chunk (handle "Will," "Will -" "Will’s")
+    return (
+      t.startsWith(name + " ") ||
+      t.startsWith(name + ",") ||
+      t.startsWith(name + "-") ||
+      t.startsWith(name + "—") ||
+      t.startsWith(name + "'") ||
+      t.startsWith(name + "’")
+    );
+  }
+
   function isGood(text) {
     const t = (text || "").toLowerCase().trim();
     if (!t) return false;
 
-    // avoid certain openings
+    // Hard cap: 2 sentences max
+    if (countSentences(t) > 2) return false;
+
+    // Don’t always start with employee name
+    if (startsWithEmployeeName(t)) return false;
+
+    // avoid certain openings (generic)
     for (const s of cfg.avoidStarts) {
       if (t.startsWith(s)) return false;
     }
@@ -81,19 +104,14 @@ module.exports = async function handler(req, res) {
       if (!mentions) return false;
     }
 
-    // keep it short-ish: 1–2 sentences. (Soft check)
-    const sentenceCount = t.split(/[.!?]+/).filter(Boolean).length;
-    if (sentenceCount > 2) return false;
-
     return true;
   }
 
-  // Prompt builder
   function buildPrompt() {
     const notes = (serviceNotes || "").trim();
 
     return `
-Write a very short Google review (1–2 sentences max).
+Write a Google review that is MAX 2 sentences.
 
 Context:
 - This is for ${cfg.label}.
@@ -101,16 +119,17 @@ Context:
 - Do NOT mention the business name.
 
 Hard requirements:
-- Mention "${employee}" naturally.
-- Include at least ONE specific, relevant detail for this type of business.
+- Mention "${employee}" somewhere in the review, but DO NOT start the review with "${employee}".
 - The review MUST include at least one of these words: ${cfg.mustIncludeAny.join(", ")}.
 ${cfg.mustMentionAny.length ? `- Also mention: ${cfg.mustMentionAny.join(" or ")}.` : ""}
 
 Style rules:
+- Keep it short and natural (no long paragraphs).
 - Do NOT start with "Just had", "Just got", or "I just".
 - Sound like a real customer (casual, believable).
 - Avoid marketing language and overly excited claims.
 - Use different wording and structure each time.
+- Avoid starting with the employee’s name.
 
 Extra context (use if helpful, do not copy verbatim):
 ${notes || "(none)"}
@@ -135,14 +154,13 @@ Write ONLY the review text.
           { role: "user", content: prompt }
         ],
         temperature: 0.95,
-        max_tokens: 120
+        max_tokens: 90
       })
     });
 
     const textBody = await resp.text();
 
     if (!resp.ok) {
-      // Return OpenAI error body so it’s easy to debug
       throw new Error(textBody);
     }
 
@@ -154,7 +172,7 @@ Write ONLY the review text.
   try {
     let review = "";
 
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < 4; attempt++) {
       review = await generateOnce();
       if (isGood(review)) break;
     }
@@ -162,9 +180,11 @@ Write ONLY the review text.
     // Fallbacks (rare)
     if (!isGood(review)) {
       if (type === "solar") {
-        review = `${employee} was helpful and made the solar process easy to understand — the pricing and next steps were clear.`;
+        // 2 sentences max, no starting with employee name, include solar keywords
+        review = `Really appreciated how clear everything was. ${employee} explained solar pricing and savings in a way that made sense.`;
       } else {
-        review = `${employee} did a great job — my car was clean, fresh, and the interior looked spotless.`;
+        // 2 sentences max, no starting with employee name, include detailing keywords + car
+        review = `My car looked spotless when it was done. ${employee} got the interior clean and feeling fresh.`;
       }
     }
 
