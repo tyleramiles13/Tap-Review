@@ -38,9 +38,6 @@ module.exports = async function handler(req, res) {
   const rules = {
     auto_detailing: {
       label: "an auto detailing service",
-      mustIncludeAny: [
-        "interior", "exterior", "vacuum", "vacuumed", "spotless", "shiny",
-        "clean", "fresh", "smelled", "wax", "polish"
       ],
       mustMentionAny: ["car", "vehicle"],
       avoidStarts: [
@@ -171,7 +168,7 @@ module.exports = async function handler(req, res) {
     const chosenStyle = styles[Math.floor(Math.random() * styles.length)];
 
     return `
-Write a Google review that is MAX 2 sentences.
+Write a Google review that is MAX 2 sentences and does not have anything other than a period, exclamation point or coma for punctuation.
 
 Context:
 - This is for ${cfg.label}.
@@ -213,7 +210,7 @@ Write ONLY the review text.
       body: JSON.stringify({
         model: "gpt-4o-mini",
         messages: [
-          { role: "system", content: "You write short, human-sounding Google reviews. No promotional tone." },
+          { role: "system", content: "You write short, generic and vague, human-sounding Google reviews. No promotional tone. Not robotic, and sounds written by a high schooler." },
           { role: "user", content: prompt }
         ],
         temperature: 1.0,
