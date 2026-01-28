@@ -17,10 +17,8 @@ module.exports = async function handler(req, res) {
     return res.json({ error: "Missing OPENAI_API_KEY_REAL" });
   }
 
-  // --- Determine business type (safe for Will + works even if businessType isn’t sent) ---
+  // --- Determine business type (safe default) ---
   let type = (businessType || "").toLowerCase().trim();
-
-  // Normalize common variants
   if (type === "auto-detailing") type = "auto_detailing";
   if (type === "detail" || type === "detailing") type = "auto_detailing";
 
@@ -28,57 +26,43 @@ module.exports = async function handler(req, res) {
     const notesLower = (serviceNotes || "").toLowerCase();
     const solarHints = [
       "solar", "panel", "panels", "quote", "pricing", "bill", "savings",
-      "financing", "install", "installation", "estimate", "kw", "utility"
+      "financing", "install", "installation", "estimate", "kw", "utility", "roof"
     ];
     const looksSolar = solarHints.some((w) => notesLower.includes(w));
     type = looksSolar ? "solar" : "auto_detailing";
   }
 
-  // --- Rules by business type ---
-  const rules = {
+  // --- Topic words (broad pools so it doesn’t force the same 3 words) ---
+  const topic = {
     auto_detailing: {
-      label: "an auto detailing service",
-      mustIncludeAny: [
-        "interior", "exterior", "vacuum", "vacuumed", "spotless", "shiny",
-        "clean", "fresh", "smelled", "wax", "polish"
+      label: "auto detailing",
+      tokens: [
+        "interior", "seats", "carpets", "mats", "dashboard", "console", "windows",
+        "exterior", "paint", "wheels", "tires", "finish", "shine",
+        "clean", "detailed", "like new", "great job", "attention to detail"
       ],
-      mustMentionAny: ["car", "vehicle"],
-      avoidStarts: [
-        "just had", "just got", "i just",
-        "had a great", "had a good", "had a great experience", "had a great consultation",
-        "great experience", "great consultation"
-      ]
+      softAvoid: ["spotless", "fresh", "magic"], // not banned forever, just discouraged
     },
     solar: {
-      label: "a solar conversation / consultation (often door-to-door)",
-      // Make sure the review actually sounds like solar (not generic service talk)
-      mustIncludeAny: [
-        "solar", "panel", "panels", "quote", "pricing", "bill", "savings",
-        "financing", "estimate", "install", "installation", "process", "utility", "roof"
+      label: "solar consultation",
+      tokens: [
+        "solar", "panels", "quote", "estimate", "pricing", "bill", "utility",
+        "savings", "financing", "roof", "installation", "timeline", "options",
+        "questions", "next steps", "process"
       ],
-      mustMentionAny: [],
-      // Ban the repetitive openers you’re seeing
-      avoidStarts: [
-        "just had", "just got", "i just",
-        "had a great", "had a good", "had a great experience", "had a great consultation",
-        "great experience", "great consultation",
-        "had a great conversation", "had a great meeting",
-        "had a great", "had a good"
-      ],
-      // Common robot phrases to avoid repeating over and over
-      avoidPhrases: [
-        "walked me through",
-        "made the whole process",
-        "helped me understand my potential savings",
-        "really appreciated",
-        "took the time to explain"
-      ]
+      softAvoid: ["walked me through", "made the whole process", "potential savings"],
     }
   };
 
-  const cfg = rules[type] || rules.auto_detailing;
+  const cfg = topic[type] || topic.auto_detailing;
+  const notes = String(serviceNotes || "").trim();
 
-  // --- Helpers ---
+  // --- Hard punctuation rules you asked for ---
+  // No semicolons, no colons, no dashes of any kind (hyphen/en/em)
+  function hasForbiddenPunctuation(text) {
+    return /[;:—–-]/.test(text || "");
+  }
+
   function countSentences(text) {
     const parts = (text || "").trim().split(/[.!?]+/).filter(Boolean);
     return parts.length;
@@ -92,113 +76,105 @@ module.exports = async function handler(req, res) {
     return (
       t.startsWith(name + " ") ||
       t.startsWith(name + ",") ||
-      t.startsWith(name + "-") ||
-      t.startsWith(name + "—") ||
       t.startsWith(name + "'") ||
       t.startsWith(name + "’")
     );
   }
 
-  function startsWithBannedOpener(text) {
+  function startsWithBoringStoryOpener(text) {
     const t = (text || "").trim().toLowerCase();
     if (!t) return false;
-    return cfg.avoidStarts.some((s) => t.startsWith(s));
+    const banned = [
+      "after ", "after a ", "after an ", "after the ",
+      "on my way", "when i", "when we",
+      "last week", "yesterday", "this weekend"
+    ];
+    return banned.some((s) => t.startsWith(s));
   }
 
-  function containsAvoidPhrases(text) {
-    if (!cfg.avoidPhrases || cfg.avoidPhrases.length === 0) return false;
+  function containsSoftAvoid(text) {
     const t = (text || "").toLowerCase();
-    return cfg.avoidPhrases.some((p) => t.includes(p.toLowerCase()));
+    return (cfg.softAvoid || []).some((p) => t.includes(String(p).toLowerCase()));
   }
 
+  // Keep it short + clean. Don’t over-restrict content.
   function isGood(text) {
-    const t = (text || "").toLowerCase().trim();
-    if (!t) return false;
+    const raw = (text || "").trim();
+    if (!raw) return false;
 
-    // Hard cap: 2 sentences max (your request)
-    if (countSentences(t) > 2) return false;
+    const sentences = countSentences(raw);
+    if (sentences < 1 || sentences > 2) return false;
 
-    // Don’t always start with employee name
-    if (startsWithEmployeeName(t)) return false;
+    if (hasForbiddenPunctuation(raw)) return false;
+    if (startsWithEmployeeName(raw)) return false;
+    if (startsWithBoringStoryOpener(raw)) return false;
 
-    // Ban repetitive openers
-    if (startsWithBannedOpener(t)) return false;
-
-    // Avoid repeated robot phrases
-    if (containsAvoidPhrases(t)) return false;
-
-    // Must include a relevant keyword for that business type
-    const hasKeyword = cfg.mustIncludeAny.some((k) => t.includes(k));
-    if (!hasKeyword) return false;
-
-    // Optionally require certain mention words
-    if (cfg.mustMentionAny.length > 0) {
-      const mentions = cfg.mustMentionAny.some((w) => t.includes(w));
-      if (!mentions) return false;
-    }
+    // We *prefer* not to repeat the same “fresh/spotless/magic” stuff.
+    // Not a hard fail every time, but we can treat it as a soft fail.
+    if (containsSoftAvoid(raw)) return false;
 
     return true;
   }
 
-  // --- Prompt styles (biggest improvement for “not the same every time”) ---
+  // --- Variation engine: “frames” + randomized focus tokens ---
+  function pick(arr) {
+    return arr[Math.floor(Math.random() * arr.length)];
+  }
+
+  // 75% 1 sentence, 25% 2 sentences
+  const wantTwoSentences = Math.random() < 0.25;
+  const sentenceTarget = wantTwoSentences ? 2 : 1;
+
   function buildPrompt() {
-    const notes = (serviceNotes || "").trim();
+    const focusA = pick(cfg.tokens);
+    const focusB = pick(cfg.tokens);
 
-    // Different “angles” so it doesn’t repeat pricing/consultation every time
-    const solarAngles = [
-      "focus on being low-pressure and respectful (door-to-door context is okay but keep it subtle)",
-      "focus on clarity: the explanation finally made sense",
-      "focus on the customer feeling informed (not sold)",
-      "focus on options: comparing choices or next steps",
-      "focus on practical details: estimate/roof/utility bill/install timeline",
-      "focus on the rep being normal and easy to talk to (but still include a solar keyword)"
+    // Different frames so structure doesn’t repeat
+    const oneSentenceFrames = [
+      `Write one sentence that starts with an observation, then mention "${employee}" naturally, and include one small ${cfg.label} detail.`,
+      `Write one sentence that sounds like a real customer recommending someone, mention "${employee}", and include one ${cfg.label} keyword.`,
+      `Write one sentence with a simple result first, then mention "${employee}" after a comma, and keep it casual.`,
+      `Write one sentence that starts with a short compliment, then mention "${employee}" later in the sentence.`,
+      `Write one sentence that starts with "Really happy with it" or "Super easy", then mention "${employee}" later.`
     ];
 
-    const detailingAngles = [
-      "focus on how clean the interior felt",
-      "focus on the exterior shine / spotless finish",
-      "focus on a before/after difference",
-      "focus on small details being taken care of"
+    const twoSentenceFrames = [
+      `Write two short sentences. First sentence is a quick positive result. Second sentence mentions "${employee}" and includes one ${cfg.label} detail.`,
+      `Write two short sentences. Mention "${employee}" in the second sentence, not the first.`,
+      `Write two short sentences. First sentence is general. Second sentence includes a small ${cfg.label} detail and a recommendation.`,
+      `Write two short sentences. Avoid sounding like a script. Keep it simple and believable.`
     ];
 
-    const anglePool = type === "solar" ? solarAngles : detailingAngles;
-    const angle = anglePool[Math.floor(Math.random() * anglePool.length)];
-
-    const styleA = `Style A (short + direct): 1 sentence if possible, 2 max. Start with an observation (NOT the employee name).`;
-    const styleB = `Style B (mini story): Start with a quick real-life moment. Mention "${employee}" after the first phrase.`;
-    const styleC = `Style C (result-first): Start with the most specific outcome, then mention "${employee}".`;
-    const styles = [styleA, styleB, styleC];
-    const chosenStyle = styles[Math.floor(Math.random() * styles.length)];
+    const frame = sentenceTarget === 1 ? pick(oneSentenceFrames) : pick(twoSentenceFrames);
 
     return `
-Write a Google review that is MAX 2 sentences.
+Write a short Google review draft.
+
+Hard rules:
+- ${sentenceTarget} sentence${sentenceTarget === 2 ? "s" : ""} only.
+- Do NOT use semicolons.
+- Do NOT use colons.
+- Do NOT use dashes of any kind.
+- Do NOT start the review with "${employee}".
+- Do NOT start with a long story like "After a road trip" or "After hauling gear".
 
 Context:
-- This is for ${cfg.label}.
-- The employee’s name is "${employee}".
+- Business type: ${cfg.label}
+- Employee name: "${employee}"
 - Do NOT mention the business name.
 
-Hard requirements:
-- Mention "${employee}" somewhere in the review, but DO NOT start the review with "${employee}".
-- The review MUST include at least one of these words: ${cfg.mustIncludeAny.join(", ")}.
-${cfg.mustMentionAny.length ? `- Also mention: ${cfg.mustMentionAny.join(" or ")}.` : ""}
+What to include:
+- Mention "${employee}" once.
+- Include one small relevant detail using words like: "${focusA}" or "${focusB}".
+- Keep it natural, not salesy, not robotic.
 
-Banned openings:
-- Do NOT start with "Had a great", "Had a great experience", "Had a great consultation", "Great experience", or similar.
-- Do NOT start with "Just had", "Just got", or "I just".
-- Do NOT start with the employee’s name.
-
-Avoid sounding robotic:
-- Avoid phrases like: ${cfg.avoidPhrases ? cfg.avoidPhrases.join("; ") : "none"}.
-
-Angle for this review:
-- ${angle}
-
-Extra context (use if helpful, do not copy verbatim):
+Optional notes (use lightly if helpful, do not copy exactly):
 ${notes || "(none)"}
 
-Write ONLY the review text.
-`.trim();
+Important:
+- Avoid repeating common phrases like "spotless", "fresh", or "worked his magic".
+Return ONLY the review text.
+    `.trim();
   }
 
   async function generateOnce() {
@@ -213,11 +189,15 @@ Write ONLY the review text.
       body: JSON.stringify({
         model: "gpt-4o-mini",
         messages: [
-          { role: "system", content: "You write short, human-sounding Google reviews. No promotional tone." },
+          {
+            role: "system",
+            content:
+              "You write short, human sounding Google reviews. Keep them varied, casual, and believable. No promotional tone. Follow punctuation rules exactly."
+          },
           { role: "user", content: prompt }
         ],
-        temperature: 1.0,
-        max_tokens: 85
+        temperature: 1.15,
+        max_tokens: 90
       })
     });
 
@@ -231,18 +211,22 @@ Write ONLY the review text.
   try {
     let review = "";
 
-    // More retries since we’re enforcing more rules (still fast)
-    for (let attempt = 0; attempt < 6; attempt++) {
+    // Retry for quality/variation. SoftAvoid makes it try different phrasing.
+    for (let attempt = 0; attempt < 10; attempt++) {
       review = await generateOnce();
       if (isGood(review)) break;
     }
 
-    // Fallbacks (rare)
+    // Fallbacks (must obey punctuation rules)
     if (!isGood(review)) {
       if (type === "solar") {
-        review = `It was nice getting clear answers without any pressure. ${employee} explained solar pricing and the estimate process in a way that actually made sense.`;
+        review = sentenceTarget === 2
+          ? `The solar info was easy to understand. ${employee} answered my questions and made the quote feel simple.`
+          : `Super easy solar conversation, ${employee} answered my questions and made the quote feel simple.`;
       } else {
-        review = `My car looked spotless when it was done. ${employee} got the interior clean and feeling fresh.`;
+        review = sentenceTarget === 2
+          ? `My car looks great after the detail. ${employee} did a solid job on the interior and finish.`
+          : `My car looks great after the detail, ${employee} did a solid job on the interior and finish.`;
       }
     }
 
