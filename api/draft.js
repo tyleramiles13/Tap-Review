@@ -18,7 +18,7 @@ module.exports = async function handler(req, res) {
     return res.json({ error: "Missing OPENAI_API_KEY_REAL" });
   }
 
-  // --- Determine business type (safe for Will + works even if businessType isn’t sent) ---
+  // --- Determine business type (safe defaults) ---
   let type = (businessType || "").toLowerCase().trim();
 
   // Normalize common variants
@@ -42,6 +42,7 @@ module.exports = async function handler(req, res) {
       "kw",
       "utility",
       "roof",
+      "monthly",
     ];
     const looksSolar = solarHints.some((w) => notesLower.includes(w));
     type = looksSolar ? "solar" : "auto_detailing";
@@ -51,79 +52,93 @@ module.exports = async function handler(req, res) {
   const rules = {
     auto_detailing: {
       label: "an auto detailing service",
-      // IMPORTANT: This was missing in your file and was causing crashes.
       mustIncludeAny: [
+        "clean",
+        "spotless",
         "interior",
         "exterior",
+        "shiny",
+        "fresh",
         "vacuum",
         "vacuumed",
-        "spotless",
-        "shiny",
-        "clean",
-        "fresh",
-        "smelled",
         "wax",
         "polish",
-        "stains",
-        "steam",
-        "dashboard",
-        "seats",
       ],
       mustMentionAny: ["car", "vehicle"],
       avoidStarts: [
+        // old repetitive openers
         "just had",
         "just got",
         "i just",
         "had a great",
         "had a good",
-        "had a great experience",
-        "had a great consultation",
         "great experience",
         "great consultation",
+
+        // story-style openers you DON'T want
+        "after ",
+        "after a ",
+        "after an ",
+        "after the ",
+        "following ",
+        "after my ",
+        "after our ",
+        "after hauling",
+        "after a long",
+        "after driving",
+        "after a road",
       ],
-      // Optional: keep this empty for detailing (or add phrases later)
-      avoidPhrases: [],
+      avoidPhrases: [
+        // optional: you can add more later if you see repeats
+        "made the whole process",
+        "took the time to explain",
+        "walked me through",
+      ],
     },
 
     solar: {
-      label: "a solar conversation / consultation (often door-to-door)",
-      // Make sure the review actually sounds like solar (not generic service talk)
+      label: "a solar conversation / consultation",
       mustIncludeAny: [
         "solar",
-        "panel",
         "panels",
+        "panel",
         "quote",
         "pricing",
         "bill",
         "savings",
         "financing",
         "estimate",
-        "install",
-        "installation",
-        "process",
         "utility",
         "roof",
-        "monthly",
+        "install",
       ],
       mustMentionAny: [],
-      // Ban the repetitive openers you’re seeing
       avoidStarts: [
         "just had",
         "just got",
         "i just",
         "had a great",
         "had a good",
-        "had a great experience",
-        "had a great consultation",
         "great experience",
         "great consultation",
         "had a great conversation",
         "had a great meeting",
-        "had a great",
-        "had a good",
+
+        // story-style openers you DON'T want
+        "after ",
+        "after a ",
+        "after an ",
+        "after the ",
+        "following ",
+        "after my ",
+        "after our ",
+        "after hauling",
+        "after a long",
+        "after driving",
+        "after a road",
       ],
-      // Common robot phrases to avoid repeating over and over
       avoidPhrases: [
+        // common robot phrases
         "walked me through",
         "made the whole process",
         "helped me understand my potential savings",
@@ -158,8 +173,6 @@ module.exports = async function handler(req, res) {
     return (
       t.startsWith(name + " ") ||
       t.startsWith(name + ",") ||
-      t.startsWith(name + "-") ||
-      t.startsWith(name + "—") ||
       t.startsWith(name + "'") ||
       t.startsWith(name + "’")
     );
@@ -177,29 +190,51 @@ module.exports = async function handler(req, res) {
     return avoidPhrases.some((p) => t.includes(String(p).toLowerCase()));
   }
 
+  // NEW: ban semicolons and any dashes (hyphen, en dash, em dash)
+  function containsBannedPunctuation(text) {
+    if (!text) return false;
+    return /[;—–-]/.test(text);
+  }
+
+  // Optional: avoid weird punctuation beyond what you want
+  function containsOddPunctuation(text) {
+    if (!text) return false;
+    // Blocks: colon, parentheses, brackets, quotes, emojis (basic), etc.
+    // Keeps: letters, numbers, spaces, commas, periods, exclamation
+    return /[:()\[\]{}"“”'’@#%^*_+=<>\\/|~`]/.test(text);
+  }
+
   function isGood(text) {
-    const t = (text || "").toLowerCase().trim();
-    if (!t) return false;
+    const raw = (text || "").trim();
+    const t = raw.toLowerCase();
 
-    // Hard cap: 2 sentences max
-    if (countSentences(t) > 2) return false;
+    if (!raw) return false;
 
-    // Don’t always start with employee name
-    if (startsWithEmployeeName(t)) return false;
+    // 2 sentences max
+    if (countSentences(raw) > 2) return false;
 
-    // Ban repetitive openers
-    if (startsWithBannedOpener(t)) return false;
+    // Don’t start with employee name
+    if (startsWithEmployeeName(raw)) return false;
 
-    // Avoid repeated robot phrases
-    if (containsAvoidPhrases(t)) return false;
+    // Don’t start with story openers / repetitive openers
+    if (startsWithBannedOpener(raw)) return false;
 
-    // Must include a relevant keyword for that business type
+    // No semicolons or dashes
+    if (containsBannedPunctuation(raw)) return false;
+
+    // Keep punctuation simple (optional extra strictness)
+    if (containsOddPunctuation(raw)) return false;
+
+    // Avoid repeated robotic phrases
+    if (containsAvoidPhrases(raw)) return false;
+
+    // Must include a relevant keyword so it stays on-topic
     if (mustIncludeAny.length > 0) {
       const hasKeyword = mustIncludeAny.some((k) => t.includes(String(k).toLowerCase()));
       if (!hasKeyword) return false;
     }
 
-    // Optionally require certain mention words
+    // Optionally require mention words (like car/vehicle for detailing)
     if (mustMentionAny.length > 0) {
       const mentions = mustMentionAny.some((w) => t.includes(String(w).toLowerCase()));
       if (!mentions) return false;
@@ -208,68 +243,83 @@ module.exports = async function handler(req, res) {
     return true;
   }
 
-  // --- Prompt styles (biggest improvement for “not the same every time”) ---
+  // --- Prompt: generic templates with variation (NOT story-based) ---
   function buildPrompt() {
     const notes = (serviceNotes || "").trim();
 
-    // Different “angles” so it doesn’t repeat pricing/consultation every time
+    // Generic “template angles” (not storytelling)
     const solarAngles = [
-      "focus on being low-pressure and respectful (door-to-door context is okay but keep it subtle)",
-      "focus on clarity: the explanation finally made sense",
-      "focus on the customer feeling informed (not sold)",
-      "focus on options: comparing choices or next steps",
-      "focus on practical details: estimate/roof/utility bill/install timeline",
-      "focus on the rep being normal and easy to talk to (but still include a solar keyword)",
+      "keep it generic and low pressure, mention solar and one practical word like quote or pricing",
+      "keep it short and simple, mention solar and panels without extra details",
+      "keep it neutral and believable, mention solar and estimate with no story",
+      "keep it basic, mention solar and utility bill, do not add a scenario",
+      "keep it generic, mention financing or pricing, do not describe a personal situation",
     ];
 
     const detailingAngles = [
-      "focus on how clean the interior felt",
-      "focus on the exterior shine / spotless finish",
-      "focus on a before/after difference",
-      "focus on small details being taken care of",
+      "keep it generic, mention car and interior being clean or fresh",
+      "keep it generic, mention car and exterior looking shiny or clean",
+      "keep it basic, mention car looking clean and ready to go, no extra details",
+      "keep it neutral, mention vehicle and spotless or clean, do not add a scenario",
+      "keep it simple, mention car and vacuumed or fresh, no story",
     ];
 
     const anglePool = type === "solar" ? solarAngles : detailingAngles;
     const angle = anglePool[Math.floor(Math.random() * anglePool.length)];
 
-    const styleA = `Style A (short + direct): 1 sentence if possible, 2 max. Start with an observation (NOT the employee name).`;
-    const styleB = `Style B (mini story): Start with a quick real-life moment. Mention "${employee}" after the first phrase.`;
-    const styleC = `Style C (result-first): Start with the most specific outcome, then mention "${employee}".`;
-    const styles = [styleA, styleB, styleC];
-    const chosenStyle = styles[Math.floor(Math.random() * styles.length)];
+    // Different sentence patterns to reduce repetition
+    const patterns = [
+      `Pattern 1: Start with a result. Mention "${employee}" in the second half of sentence 1.`,
+      `Pattern 2: Start with a simple opinion. Mention "${employee}" in sentence 2.`,
+      `Pattern 3: Start with a quick recommendation. Mention "${employee}" after the first clause.`,
+      `Pattern 4: Start with "Really happy with the" and then mention "${employee}" later, but do not start with the name.`,
+      `Pattern 5: Start with "Super easy" or "Quick and simple" then mention "${employee}" later.`,
+    ];
+    const pattern = patterns[Math.floor(Math.random() * patterns.length)];
 
     return `
-Write a Google review that is MAX 2 sentences.
-Keep punctuation simple (periods, commas, and one exclamation is okay).
+Write a very short Google review that feels like a generic starter draft the customer can edit later.
+Max 2 sentences.
+
+Punctuation rules are strict:
+Do not use semicolons.
+Do not use dashes of any kind.
+Only use periods, commas, and at most one exclamation point.
 
 Context:
-- This is for ${cfg.label}.
-- The employee’s name is "${employee}".
-- Do NOT mention the business name.
+This is for ${cfg.label}.
+Employee name is "${employee}".
+Do not mention the business name.
 
 Hard requirements:
-- Mention "${employee}" somewhere in the review, but DO NOT start the review with "${employee}".
-- The review MUST include at least one of these words: ${mustIncludeAny.join(", ")}.
-${mustMentionAny.length ? `- Also mention: ${mustMentionAny.join(" or ")}.` : ""}
+Mention "${employee}" somewhere but do not start the review with "${employee}".
+Include at least one of these words: ${mustIncludeAny.join(", ")}.
+${mustMentionAny.length ? `Also include: ${mustMentionAny.join(" or ")}.` : ""}
 
 Banned openings:
-- Do NOT start with "Had a great", "Had a great experience", "Had a great consultation", "Great experience", or similar.
-- Do NOT start with "Just had", "Just got", or "I just".
-- Do NOT start with the employee’s name.
+Do not start with After.
+Do not start with Just had, Just got, I just.
+Do not start with Had a great, Great experience, Had a great consultation.
+Do not start with a long personal scenario.
 
-Avoid sounding robotic:
-- Avoid phrases like: ${avoidPhrases.length ? avoidPhrases.join("; ") : "none"}.
+Style:
+Keep it generic, vague, and believable.
+Avoid overly specific situations like road trips, sports gear, snacks, hauling, kids, pets, weather.
+Avoid sounding like marketing.
 
-Angle for this review:
-- ${angle}
+Variation:
+Use a different wording and structure each time.
 
-Structure rule:
-- ${chosenStyle}
+Angle:
+${angle}
 
-Extra context (use if helpful, do not copy verbatim):
+Structure:
+${pattern}
+
+Optional notes you may lightly reflect, but keep it vague:
 ${notes || "(none)"}
 
-Write ONLY the review text.
+Write only the review text.
 `.trim();
   }
 
@@ -288,11 +338,11 @@ Write ONLY the review text.
           {
             role: "system",
             content:
-              "Write short, human-sounding Google reviews. Not promotional, not robotic. Vary wording and structure each time. Do not mention the business name. Keep it believable.",
+              "Write short, human sounding Google review starter drafts. Keep them generic and editable. No business name. No stories. No semicolons or dashes. Do not start with After. Vary structure each time.",
           },
           { role: "user", content: prompt },
         ],
-        temperature: 1.0,
+        temperature: 1.05,
         max_tokens: 85,
       }),
     });
@@ -307,18 +357,18 @@ Write ONLY the review text.
   try {
     let review = "";
 
-    // More retries since we’re enforcing more rules (still fast)
-    for (let attempt = 0; attempt < 6; attempt++) {
+    // More retries because rules are strict
+    for (let attempt = 0; attempt < 8; attempt++) {
       review = await generateOnce();
       if (isGood(review)) break;
     }
 
-    // Fallbacks (rare)
+    // Fallbacks (generic + editable, still on-type)
     if (!isGood(review)) {
       if (type === "solar") {
-        review = `It was nice getting clear answers without any pressure. ${employee} explained solar pricing and the estimate process in a way that actually made sense.`;
+        review = `Super easy to get a solar quote and talk through pricing. ${employee} was helpful and made the next steps clear.`;
       } else {
-        review = `My car looked spotless when it was done. ${employee} got the interior clean and feeling fresh.`;
+        review = `My car looks clean and fresh after the detail. ${employee} did a great job and I would recommend him.`;
       }
     }
 
@@ -329,4 +379,5 @@ Write ONLY the review text.
     return res.json({ error: "AI generation failed" });
   }
 };
+
 
