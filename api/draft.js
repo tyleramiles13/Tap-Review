@@ -21,7 +21,7 @@ module.exports = async function handler(req, res) {
   let type = (businessType || "").toLowerCase().trim();
   if (type === "auto-detailing") type = "auto_detailing";
   if (type === "detail" || type === "detailing") type = "auto_detailing";
-  if (!type) type = "auto_detailing"; // default stays detailing so Will stays normal
+  if (!type) type = "auto_detailing"; // keep Will safe by defaulting to detailing
 
   const notes = String(serviceNotes || "").trim();
 
@@ -29,12 +29,12 @@ module.exports = async function handler(req, res) {
     return arr[Math.floor(Math.random() * arr.length)];
   }
 
-  // Solar: ALWAYS 1 sentence template drafts
-  // Detailing: keep your previous behavior (mostly 1, sometimes 2)
+  // Solar: ALWAYS 1 sentence template
+  // Detailing: mostly 1, sometimes 2 (like your current behavior)
   const sentenceTarget =
     type === "solar" ? 1 : (Math.random() < 0.25 ? 2 : 1);
 
-  // Remove forbidden punctuation instead of failing (fast + consistent)
+  // Remove forbidden punctuation
   function sanitize(text) {
     return String(text || "").replace(/[;:—–-]/g, "").trim();
   }
@@ -83,7 +83,32 @@ module.exports = async function handler(req, res) {
     return banned.some((s) => t.startsWith(s));
   }
 
-  // Solar: you want TEMPLATE drafts, not detailed pricing/savings stuff
+  // --- SOLAR: template rules + phrase bans ---
+  const solarBannedPhrases = [
+    "easy to understand",
+    "made it easy to understand",
+    "made it easy",
+    "made everything easy",
+    "super easy",
+    "very easy",
+    "straightforward",
+    "simple and easy",
+    "smooth",
+    "the process",
+    "process",
+    "walked me through",
+    "broke it down",
+    "answered all my questions",
+    "solar conversation",
+    "conversation",
+    "consultation"
+  ];
+
+  function containsBannedPhrase(text, bannedList) {
+    const low = String(text || "").toLowerCase();
+    return bannedList.some((p) => low.includes(p));
+  }
+
   function solarIsAcceptable(text) {
     const t = String(text || "").trim();
     if (!t) return false;
@@ -93,30 +118,16 @@ module.exports = async function handler(req, res) {
 
     const low = t.toLowerCase();
 
-    // Ban words/phrases you don’t want
-    const bannedWords = [
-      "conversation",
-      "consultation",
-      "pricing",
-      "savings",
-      "bill",
-      "utility",
-      "estimate",
-      "quote",
-      "financing",
-      "timeline",
-      "roof"
-    ];
-    if (bannedWords.some((w) => low.includes(w))) return false;
-
-    // Must still feel like a solar review (light touch)
-    // (This avoids it becoming a totally generic “great service” review.)
+    // Must feel solar-ish but not salesy
     if (!low.includes("solar")) return false;
 
-    // Must mention employee somewhere
+    // Must mention employee once somewhere
     if (!low.includes(String(employee).toLowerCase())) return false;
 
-    // 1 sentence only
+    // Ban repetitive / robotic phrases
+    if (containsBannedPhrase(t, solarBannedPhrases)) return false;
+
+    // Must be 1 sentence only
     const sentenceCount = t.split(/[.!?]+/).filter(Boolean).length;
     if (sentenceCount > 1) return false;
 
@@ -127,7 +138,7 @@ module.exports = async function handler(req, res) {
     return true;
   }
 
-  // Detailing: keep checks light so Will doesn’t suddenly start falling back
+  // Detailing: keep checks light so Will doesn’t suddenly fall back
   function detailingIsAcceptable(text) {
     const t = String(text || "").trim();
     if (!t) return false;
@@ -137,40 +148,41 @@ module.exports = async function handler(req, res) {
   }
 
   function buildPromptSolar() {
-    // A pool of “template” frames that sound like reviews but stay vague
-    const frames = [
-      `Write ONE sentence that sounds like a real customer review and is easy to edit. Mention "${employee}" once, not at the start, and mention solar once.`,
-      `Write ONE short sentence that feels like a genuine review starter. Do not add specific details. Mention "${employee}" once and mention solar once.`,
-      `Write ONE sentence that is positive but general so the customer can personalize it. Mention "${employee}" once (not first) and include the word "solar".`,
-      `Write ONE sentence that feels normal and not robotic. It should be a vague template. Mention "${employee}" once (not first) and include "solar".`
+    // “Template” starters that do NOT rely on "easy to understand"
+    // Also they intentionally leave room for the customer to add specifics
+    const patterns = [
+      `Write ONE short sentence that sounds like a real Google review starter and is easy for a customer to edit. Mention "${employee}" once, not at the start, and include the word "solar" once.`,
+      `Write ONE sentence that feels like a genuine review but stays general. Mention "${employee}" once (not first) and include "solar" once.`,
+      `Write ONE sentence that is positive and vague so the customer can personalize it. Mention "${employee}" once (not first) and include "solar" once.`,
+      `Write ONE sentence that sounds normal and not robotic. Mention "${employee}" once, not at the start, and include "solar" once.`
     ];
 
     return `
 Write a Google review draft.
 
 Hard rules:
-- Exactly ONE sentence only.
+- Exactly ONE sentence.
 - Do NOT start with "${employee}".
 - Do NOT start with a story opener (After, Last week, Yesterday, etc.).
 - Do NOT mention the business name.
 - Include the word "solar" exactly once.
 - Mention "${employee}" exactly once.
-- Do NOT mention pricing, savings, bills, quotes, estimates, financing, timelines, roofs, or consultations.
-- Do NOT use the words "conversation" or "consultation".
+- Keep it general like a template so the customer can edit.
+- Do NOT use any of these phrases: ${solarBannedPhrases.join(", ")}.
 - Do NOT use semicolons, colons, or any dashes.
 
-Optional notes (use lightly, do NOT add specifics):
+Optional notes (do NOT add details, just tone):
 ${notes || "(none)"}
 
 Instruction:
-${pick(frames)}
+${pick(patterns)}
 
 Return ONLY the review text.
     `.trim();
   }
 
   function buildPromptDetailing() {
-    // Keep detailing prompt simple so Will stays consistent
+    // leave detailing simple / stable
     return `
 Write a short Google review draft.
 
@@ -210,7 +222,7 @@ Return ONLY the review text.
             {
               role: "system",
               content:
-                "Write short, human sounding Google reviews. Vary structure. No promotional tone."
+                "Write short, human sounding Google reviews. Keep them casual and believable. Avoid repeating the same phrasing."
             },
             { role: "user", content: prompt }
           ],
@@ -233,10 +245,9 @@ Return ONLY the review text.
     let review = "";
     const isSolar = type === "solar";
 
-    // Only 3 tries (fast)
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < 4; attempt++) {
       const prompt = isSolar ? buildPromptSolar() : buildPromptDetailing();
-      review = await generate(prompt, isSolar ? 1.2 : 1.05, isSolar ? 80 : 95);
+      review = await generate(prompt, isSolar ? 1.25 : 1.05, isSolar ? 80 : 95);
 
       review = sanitize(review);
       review = trimToSentences(review, sentenceTarget);
@@ -248,18 +259,20 @@ Return ONLY the review text.
       }
     }
 
-    // Final cleanup
     review = sanitize(review);
     review = trimToSentences(review, sentenceTarget);
 
-    // Solar fallback (still 1 sentence, still template, still no pricing/savings)
+    // Solar fallback: MANY variants, none use "easy to understand"
     if (isSolar && !solarIsAcceptable(review)) {
       const solarFallback = [
-        `Really happy with how smooth everything felt, and ${employee} made solar easy to understand.`,
-        `It was a solid experience overall, and ${employee} was helpful without being pushy about solar.`,
-        `I appreciated how simple it was to get started, and ${employee} was great to work with on solar.`,
-        `Everything was straightforward and easy, and ${employee} did a great job explaining solar.`,
-        `Super easy experience, and ${employee} was friendly and helpful with solar.`
+        `Really appreciate ${employee} being respectful and professional about solar.`,
+        `Solid experience overall and ${employee} was great to work with on solar.`,
+        `Glad I talked with ${employee} and got pointed in the right direction on solar.`,
+        `It was a good experience and ${employee} was helpful with solar.`,
+        `Thanks to ${employee} for being professional and helpful with solar.`,
+        `I had a positive experience and ${employee} was great during the solar visit.`,
+        `Everything felt professional and ${employee} did a great job with solar.`,
+        `Happy with the experience and ${employee} was friendly and helpful about solar.`
       ];
       review = sanitize(pick(solarFallback));
       review = trimToSentences(review, 1);
