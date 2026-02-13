@@ -245,12 +245,20 @@ Write a Google review draft.
 Hard rules:
 - Exactly ONE sentence.
 - Do NOT start with "${employee}".
-- Do NOT start with a story opener (After, Last week, Yesterday, etc.).
+- Do NOT start with a story, location, or conversation.
+- Do NOT mention any city names or places.
 - Do NOT mention the business name.
 - Mention "${employee}" exactly once.
 - Include the word "nails" or "nail" at least once.
-- Keep it general like a template so the customer can edit.
+- Keep it short, simple, and generic like a template the customer can edit.
+- No storytelling, no chatting, no describing events.
 - Do NOT use semicolons, colons, or any dashes.
+
+Tone:
+- Short, casual, normal.
+- Sounds like a basic review starter.
+
+Return ONLY the review text.
 
 Optional notes (use lightly for vibe only, do not add specific claims):
 ${notes || "(none)"}
