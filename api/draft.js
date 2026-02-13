@@ -19,9 +19,18 @@ module.exports = async function handler(req, res) {
 
   // --- Determine business type ---
   let type = (businessType || "").toLowerCase().trim();
+
+  // Normalize common variants (KEEP existing behavior)
   if (type === "auto-detailing") type = "auto_detailing";
   if (type === "detail" || type === "detailing") type = "auto_detailing";
-  if (!type) type = "auto_detailing"; // keep Will safe by defaulting to detailing
+
+  // ✅ NEW: Nails normalization (ADDED ONLY)
+  if (type === "nail" || type === "nails" || type === "nail_salon" || type === "nail-salon") {
+    type = "nails";
+  }
+
+  // Default: keep Will safe by defaulting to detailing (KEEP existing behavior)
+  if (!type) type = "auto_detailing";
 
   const notes = String(serviceNotes || "").trim();
 
@@ -30,9 +39,12 @@ module.exports = async function handler(req, res) {
   }
 
   // Solar: ALWAYS 1 sentence template
-  // Detailing: mostly 1, sometimes 2 (like your current behavior)
+  // Nails: ALWAYS 1 sentence template (NEW)
+  // Detailing: mostly 1, sometimes 2 (KEEP existing behavior)
   const sentenceTarget =
-    type === "solar" ? 1 : (Math.random() < 0.25 ? 2 : 1);
+    type === "solar" ? 1 :
+    type === "nails" ? 1 :
+    (Math.random() < 0.25 ? 2 : 1);
 
   // Remove forbidden punctuation
   function sanitize(text) {
@@ -83,7 +95,7 @@ module.exports = async function handler(req, res) {
     return banned.some((s) => t.startsWith(s));
   }
 
-  // --- SOLAR: template rules + phrase bans ---
+  // --- SOLAR: template rules + phrase bans (KEEP existing behavior) ---
   const solarBannedPhrases = [
     "easy to understand",
     "made it easy to understand",
@@ -102,6 +114,15 @@ module.exports = async function handler(req, res) {
     "solar conversation",
     "conversation",
     "consultation"
+  ];
+
+  // ✅ NEW: Nails banned phrases (kept light so it won’t fallback a lot)
+  const nailsBannedPhrases = [
+    "after a long day",
+    "after a long week",
+    "after work",
+    "roadtrip",
+    "hauling"
   ];
 
   function containsBannedPhrase(text, bannedList) {
@@ -138,7 +159,38 @@ module.exports = async function handler(req, res) {
     return true;
   }
 
-  // Detailing: keep checks light so Will doesn’t suddenly fall back
+  // ✅ NEW: Nails acceptability
+  function nailsIsAcceptable(text) {
+    const t = String(text || "").trim();
+    if (!t) return false;
+
+    if (startsWithName(t)) return false;
+    if (startsWithStory(t)) return false;
+
+    const low = t.toLowerCase();
+
+    // Must mention employee once somewhere
+    if (!low.includes(String(employee).toLowerCase())) return false;
+
+    // Must hint nails without being overly specific
+    // (we allow either "nails" or "nail")
+    if (!(low.includes("nails") || low.includes("nail"))) return false;
+
+    // Keep it to 1 sentence
+    const sentenceCount = t.split(/[.!?]+/).filter(Boolean).length;
+    if (sentenceCount > 1) return false;
+
+    // Light ban list to prevent weird story openers showing up mid-sentence
+    if (containsBannedPhrase(t, nailsBannedPhrases)) return false;
+
+    // Not too short
+    const wc = t.split(/\s+/).filter(Boolean).length;
+    if (wc < 8) return false;
+
+    return true;
+  }
+
+  // Detailing: keep checks light so Will doesn’t suddenly fall back (KEEP existing behavior)
   function detailingIsAcceptable(text) {
     const t = String(text || "").trim();
     if (!t) return false;
@@ -148,8 +200,6 @@ module.exports = async function handler(req, res) {
   }
 
   function buildPromptSolar() {
-    // “Template” starters that do NOT rely on "easy to understand"
-    // Also they intentionally leave room for the customer to add specifics
     const patterns = [
       `Write ONE short sentence that sounds like a real Google review starter and is easy for a customer to edit. Mention "${employee}" once, not at the start, and include the word "solar" once.`,
       `Write ONE sentence that feels like a genuine review but stays general. Mention "${employee}" once (not first) and include "solar" once.`,
@@ -181,8 +231,39 @@ Return ONLY the review text.
     `.trim();
   }
 
+  // ✅ NEW: Nails prompt builder
+  function buildPromptNails() {
+    const patterns = [
+      `Write ONE short sentence that sounds like a real review template. Mention "${employee}" once (not first) and include the word "nails" or "nail" once.`,
+      `Write ONE sentence that is positive and general so a customer can edit it. Mention "${employee}" once (not first) and include "nails" or "nail" once.`,
+      `Write ONE sentence that feels human and casual, not salesy. Mention "${employee}" once (not first) and include "nails" or "nail" once.`
+    ];
+
+    return `
+Write a Google review draft.
+
+Hard rules:
+- Exactly ONE sentence.
+- Do NOT start with "${employee}".
+- Do NOT start with a story opener (After, Last week, Yesterday, etc.).
+- Do NOT mention the business name.
+- Mention "${employee}" exactly once.
+- Include the word "nails" or "nail" at least once.
+- Keep it general like a template so the customer can edit.
+- Do NOT use semicolons, colons, or any dashes.
+
+Optional notes (use lightly for vibe only, do not add specific claims):
+${notes || "(none)"}
+
+Instruction:
+${pick(patterns)}
+
+Return ONLY the review text.
+    `.trim();
+  }
+
   function buildPromptDetailing() {
-    // leave detailing simple / stable
+    // leave detailing simple / stable (KEEP existing behavior)
     return `
 Write a short Google review draft.
 
@@ -244,16 +325,28 @@ Return ONLY the review text.
   try {
     let review = "";
     const isSolar = type === "solar";
+    const isNails = type === "nails";
 
     for (let attempt = 0; attempt < 4; attempt++) {
-      const prompt = isSolar ? buildPromptSolar() : buildPromptDetailing();
-      review = await generate(prompt, isSolar ? 1.25 : 1.05, isSolar ? 80 : 95);
+      const prompt = isSolar
+        ? buildPromptSolar()
+        : isNails
+        ? buildPromptNails()
+        : buildPromptDetailing();
+
+      review = await generate(
+        prompt,
+        isSolar ? 1.25 : isNails ? 1.15 : 1.05,
+        isSolar ? 80 : isNails ? 80 : 95
+      );
 
       review = sanitize(review);
       review = trimToSentences(review, sentenceTarget);
 
       if (isSolar) {
         if (solarIsAcceptable(review)) break;
+      } else if (isNails) {
+        if (nailsIsAcceptable(review)) break;
       } else {
         if (detailingIsAcceptable(review)) break;
       }
@@ -262,7 +355,7 @@ Return ONLY the review text.
     review = sanitize(review);
     review = trimToSentences(review, sentenceTarget);
 
-    // Solar fallback: MANY variants, none use "easy to understand"
+    // Solar fallback (KEEP existing behavior)
     if (isSolar && !solarIsAcceptable(review)) {
       const solarFallback = [
         `Really appreciate ${employee} being respectful and professional about solar.`,
@@ -278,8 +371,21 @@ Return ONLY the review text.
       review = trimToSentences(review, 1);
     }
 
-    // Detailing fallback (rare)
-    if (!isSolar && !detailingIsAcceptable(review)) {
+    // ✅ NEW: Nails fallback
+    if (isNails && !nailsIsAcceptable(review)) {
+      const nailsFallback = [
+        `My nails came out so cute and I really appreciate ${employee}.`,
+        `I love how my nails turned out and ${employee} was great.`,
+        `So happy with my nails and ${employee} did an awesome job.`,
+        `My nails look amazing and I am really glad I booked with ${employee}.`,
+        `Really happy with my nails and ${employee} made it a great experience.`
+      ];
+      review = sanitize(pick(nailsFallback));
+      review = trimToSentences(review, 1);
+    }
+
+    // Detailing fallback (KEEP existing behavior)
+    if (!isSolar && !isNails && !detailingIsAcceptable(review)) {
       review =
         sentenceTarget === 2
           ? `My car looks great after the detail. ${employee} did a solid job and it came out really clean.`
